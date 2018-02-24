@@ -10,12 +10,13 @@ oops() {
     exit 1
 }
 
-tmpDir="$(mktemp -d -t nix-binary-tarball-unpack.XXXXXXXXXX || \
-          oops "Can\'t create temporary directory for downloading the Nix binary tarball")"
-cleanup() {
-    rm -rf "$tmpDir"
-}
-trap cleanup EXIT INT QUIT TERM
+tmpDirRoot="$(dirname $(mktemp -u))"
+if [ $? -ne 0 ]; then
+    oops "Can\'t create temporary directory for downloading the Nix binary tarball"
+fi
+
+tmpDir="$tmpDirRoot/nix-binary-tarball-unpack"
+mkdir -p "$tmpDir"
 
 require_util() {
     type "$1" > /dev/null 2>&1 || which "$1" > /dev/null 2>&1 ||
@@ -38,18 +39,25 @@ require_util curl "download the binary tarball"
 require_util bzcat "decompress the binary tarball"
 require_util tar "unpack the binary tarball"
 
-echo "downloading Nix [%latestNixVersion%] binary tarball for $system from '$url' to '$tmpDir'..."
-curl -L "$url" -o "$tarball" || oops "failed to download '$url'"
+computesha() {
+    file="$1"
+    if type sha256sum > /dev/null 2>&1; then
+        sha256sum -b "$file" | cut -c1-64
+    elif type shasum > /dev/null 2>&1; then
+        shasum -a 256 -b "$file" | cut -c1-64
+    elif type openssl > /dev/null 2>&1; then
+        openssl dgst -r -sha256 "$file" | cut -c1-64
+    else
+        oops "cannot verify the SHA-256 hash of '$file'; you need one of 'shasum', 'sha256sum', or 'openssl'"
+    fi
+}
 
-if type sha256sum > /dev/null 2>&1; then
-    hash2="$(sha256sum -b "$tarball" | cut -c1-64)"
-elif type shasum > /dev/null 2>&1; then
-    hash2="$(shasum -a 256 -b "$tarball" | cut -c1-64)"
-elif type openssl > /dev/null 2>&1; then
-    hash2="$(openssl dgst -r -sha256 "$tarball" | cut -c1-64)"
-else
-    oops "cannot verify the SHA-256 hash of '$url'; you need one of 'shasum', 'sha256sum', or 'openssl'"
+if [ ! -f "$tarball" ] || [ "$(computesha "$tarball")" != "$hash" ]; then
+    echo "downloading Nix [%latestNixVersion%] binary tarball for $system from '$url' to '$tmpDir'..."
+    curl -L "$url" -o "$tarball" || oops "failed to download '$url'"
 fi
+
+hash2="$(computesha "$tarball")"
 
 if [ "$hash" != "$hash2" ]; then
     oops "SHA-256 hash mismatch in '$url'; expected $hash, got $hash2"
